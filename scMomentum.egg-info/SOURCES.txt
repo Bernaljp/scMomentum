@@ -1,0 +1,13 @@
+LICENSE
+README.md
+setup.py
+scMomentum/__init__.py
+scMomentum/landscape.py
+scMomentum/ode_solver.py
+scMomentum/optimizer_landscape.py
+scMomentum/utilities.py
+scMomentum.egg-info/PKG-INFO
+scMomentum.egg-info/SOURCES.txt
+scMomentum.egg-info/dependency_links.txt
+scMomentum.egg-info/requires.txt
+scMomentum.egg-info/top_level.txt
