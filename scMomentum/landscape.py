@@ -338,6 +338,39 @@ class Landscape:
         sig = self.get_sigmoid(x) if x is not None else self.get_sigmoid()[idx, :]
         integral = int_sig_act_inv(sig, self.threshold, self.exponent)
         return g[None, :] * integral
+
+    def bias_energy_decomposed(self, cl, x=None):
+        """
+        Calculate the decomposition of bias energy for a given cluster or all cells.
+        
+        Args:
+            cl (str): The cluster identifier or 'all' for all cells.
+            x (np.ndarray, optional): Optional specific input to calculate energy for.
+        
+        Returns:
+            np.ndarray: Decomposed bias energy for each gene.
+        """
+        idx = self.adata.obs[self.cluster_key] == cl if cl != 'all' else slice(None)
+        sig = self.get_sigmoid(x) if x is not None else self.get_sigmoid()[idx, :]
+        I = self.I[cl]
+        return -I[None, :] * sig
+    
+    def interaction_energy_decomposed(self, cl, side='in', x=None):
+        """
+        Calculate the decomposition of interaction energy for a given cluster or all cells.
+        
+        Args:
+            cl (str): The cluster identifier or 'all' for all cells.
+            side (str): Specifies the side of the interaction energy to decompose ('in' or 'out').
+            x (np.ndarray, optional): Optional specific input to calculate energy for.
+        
+        Returns:
+            np.ndarray: Decomposed interaction energy for each gene.
+        """
+        idx = self.adata.obs[self.cluster_key] == cl if cl != 'all' else slice(None)
+        sig = self.get_sigmoid(x) if x is not None else self.get_sigmoid()[idx, :]
+        W = self.W[cl]
+        return -0.5*(sig @ W) * sig if side == 'in' else -0.5*(sig @ W.T) * sig
         
     def jacobian(self, x):
         """
