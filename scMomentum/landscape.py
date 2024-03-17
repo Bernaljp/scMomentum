@@ -924,7 +924,7 @@ class Landscape:
             # Return the collected correlation values as a string for all processed clusters
             return '\n'.join([f"{cl}: {corr:.3f}" for cl, corr in correlation_values.items()])
 
-    def plot_gene_correlation_scatter(self, clus1, clus2, clus1_low=-0.5, clus1_high=0.5, clus2_low=-0.5, clus2_high=0.5, energy='total', ax=None):
+    def plot_gene_correlation_scatter(self, clus1, clus2, annotate=None, clus1_low=-0.5, clus1_high=0.5, clus2_low=-0.5, clus2_high=0.5, energy='total', ax=None):
         """
         Creates a scatter plot comparing the gene correlations with energy landscapes between two clusters.
         
@@ -967,6 +967,16 @@ class Landscape:
         # Plot the correlations using different colors for clarity
         ax.scatter(corr1[corr_corners], corr2[corr_corners], c='k', s=0.6, label='Divergent Correlations')
         ax.scatter(corr1[corr_center], corr2[corr_center], c='lightgray', s=0.5, label='Other Correlations')
+
+        if annotate is not None:
+            nn = annotate
+            # Get top 6 genes with the highest absolute correlation values
+            cor_indices = np.argsort(np.abs(corr1[corr_corners] - corr2[corr_corners]))[-nn:]
+            # Get the names of the top 6 genes with the highest absolute correlation values
+            gois = self.gene_names[corr_corners][cor_indices]
+            # Adding labels for the top 6 genes with the highest absolute correlation values
+            for gg,xx,yy in zip(gois,corr1[corr_corners],corr2[corr_corners]):
+                ax.annotate(gg, xy=(xx, yy), xytext=(xx+0.02, yy+0.02))
 
         # Add reference lines and labels
         ax.vlines([clus1_low, clus1_high], ymin=-1, ymax=1, linestyles='dashed', color='r')
