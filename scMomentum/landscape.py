@@ -140,7 +140,8 @@ class Landscape:
         # Compute sigmoid function of x
         sig = self.get_sigmoid()
         print('Inferring interaction matrix W and bias vector I for all cells')
-
+        self.W = {}
+        self.I = {}
         # If not skipping all calculations
         if not skip_all:
             # If the criterion is not 'L2', use a specific method for fitting
@@ -160,8 +161,8 @@ class Landscape:
                 rhs = np.hstack((sig, np.ones((sig.shape[0], 1), dtype=x.dtype))) if infer_I else sig
                 WI = np.linalg.lstsq(rhs, v + g[None, :] * x, rcond=1e-5)[0]
                 WI[np.abs(WI) < w_threshold] = 0
-                self.W = {'all': WI[:-1, :]} if infer_I else {'all': WI}
-                self.I = {'all': WI[-1, :]} if infer_I else {'all': -np.clip(WI, a_min=None, a_max=0).sum(axis=0)}
+                self.W['all'] = WI[:-1, :] if infer_I else WI
+                self.I['all'] = WI[-1, :] if infer_I else -np.clip(WI, a_min=None, a_max=0).sum(axis=0)
 
         # Cluster-specific fitting
         if self.cluster_key is not None:
