@@ -975,8 +975,9 @@ class Landscape:
             # Get the names of the top 6 genes with the highest absolute correlation values
             gois = self.gene_names[corr_corners][cor_indices]
             # Adding labels for the top 6 genes with the highest absolute correlation values
+            arrow_dict = {"width": 0.5, "headwidth": 0.5, "headlength": 1, "color": "black"}
             for gg,xx,yy in zip(gois,corr1[corr_corners],corr2[corr_corners]):
-                ax.annotate(gg, xy=(xx, yy), xytext=(xx+0.02, yy+0.02))
+                ax.annotate(gg, xy=(xx, yy), xytext=(xx+0.02, yy+0.02), arrowprops=arrow_dict)
 
         # Add reference lines and labels
         ax.vlines([clus1_low, clus1_high], ymin=-1, ymax=1, linestyles='dashed', color='r')
