@@ -971,13 +971,15 @@ class Landscape:
         if annotate is not None:
             nn = annotate
             # Get top 6 genes with the highest absolute correlation values
-            cor_indices = np.argsort(np.abs(corr1[corr_corners] - corr2[corr_corners]))[-nn:]
+            cor_indices = np.argsort(np.abs(corr1[corr_corners]) + np.abs(corr2[corr_corners]))[-nn:]
             # Get the names of the top 6 genes with the highest absolute correlation values
             gois = self.gene_names[corr_corners][cor_indices]
             # Adding labels for the top 6 genes with the highest absolute correlation values
-            arrow_dict = {"width": 0.5, "headwidth": 0.5, "headlength": 1, "color": "black"}
+            arrow_dict = {"width": 0.5, "headwidth": 0.5, "headlength": 1, "color": "gray"}
             for gg,xx,yy in zip(gois,corr1[corr_corners],corr2[corr_corners]):
-                ax.annotate(gg, xy=(xx, yy), xytext=(xx+0.02, yy+0.02), arrowprops=arrow_dict)
+                rand_shift_1 = np.random.uniform(-0.08,0.08)
+                rand_shift_2 = np.random.uniform(-0.08,0.08)
+                ax.annotate(gg, xy=(xx, yy), xytext=(xx+rand_shift_1, yy+rand_shift_2), arrowprops=arrow_dict)
 
         # Add reference lines and labels
         ax.vlines([clus1_low, clus1_high], ymin=-1, ymax=1, linestyles='dashed', color='r')
