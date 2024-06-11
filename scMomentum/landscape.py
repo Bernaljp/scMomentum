@@ -1263,6 +1263,97 @@ class Landscape:
         ax.set_zlabel('Energy')
         ax.legend(title='Cluster')
 
+    def plot_gene_data(self, axis1, axis2,  energy_type, top_n_axis1, top_n_axis2, order=None, interaction_direction=None, exclude_genes=[]):
+        """
+        Generalized plotting method for gene data.
+
+        Parameters:
+            order (list): List of cluster orders.
+            energy_ths (list): List of energy thresholds for each cluster.
+            energy_type (str): Type of energy ('Total', 'Interaction', 'Degradation', 'Bias').
+            axis1 (str): Data to plot on x-axis ('rate', 'expression', 'energy').
+            axis2 (str): Data to plot on y-axis ('rate', 'expression', 'energy').
+        """
+        order = self.adata.obs[self.cluster_key].unique() if order is None else order
+        n_plots =  len(order) + 1
+        interaction_direction = 'in' if interaction_direction is None else interaction_direction
+
+        # threshold_axis1 = {k: threshold_axis1 for k in order} if not isinstance(threshold_axis1, dict) else threshold_axis1
+        # threshold_axis2 = {k: threshold_axis2 for k in order} if not isinstance(threshold_axis2, dict) else threshold_axis2
+
+        fig, axs = plt.subplots(2, n_plots//2, figsize=(10, 6), tight_layout=True, sharex=True)
+        # Prepare data based on axis1 and axis2
+        plot_data = {}
+        plot_labels = {}
+
+        genes_in = np.where(~np.isin(self.gene_names, exclude_genes))[0]
+
+        if 'rate' in [axis1, axis2]:
+            if energy_type.lower() == 'interaction':
+                plot_data['rate'] = {k: self.W[k].sum(axis=1)[genes_in] for k in order} if interaction_direction.lower()=='in' else {k: self.W[k].sum(axis=0)[genes_in] for k in order}
+                plot_labels['rate'] = 'Total ourgoing interaction rate' if interaction_direction.lower()=='out' else 'Total incoming interaction rate'
+            elif energy_type.lower() == 'degradation':
+                plot_data['rate'] = {k: self.adata.var[self.gamma_key][self.genes].values[genes_in] for k in order}
+                plot_labels['rate'] = 'Degradation rate'
+            elif energy_type.lower() == 'bias':
+                plot_data['rate'] = {k: self.I[k][genes_in] for k in order}
+                plot_labels['rate'] = 'Bias rate'
+            else:
+                raise ValueError('No rate associated to energy type.')
+                
+        if 'expression' in [axis1, axis2]:
+            M = self.get_matrix(self.spliced_matrix_key)[:, self.genes[genes_in]]
+            plot_data['expression'] = {}
+            for k in order:
+                cidxs = np.where(self.adata.obs[self.cluster_key]==k)[0]
+                plot_data['expression'][k] = np.mean(M[cidxs],axis=0).A.squeeze()
+            
+            plot_labels['expression'] = 'Mean gene expression'
+        
+        if 'energy' in [axis1, axis2]:
+            if energy_type.lower() == 'total':
+                plot_data['energy'] = {k: np.mean(self.interaction_energy_decomposed(k, interaction_direction)[:,genes_in]\
+                                + self.degradation_energy_decomposed(k)[:,genes_in]\
+                                + self.bias_energy_decomposed(k)[:,genes_in], axis=0) for k in order}
+                plot_labels['energy'] = 'Total energy'
+
+            elif energy_type.lower() == 'interaction':
+                plot_data['energy'] = {k: np.mean(self.interaction_energy_decomposed(k, interaction_direction)[:,genes_in], axis=0) for k in order}
+                plot_labels['energy'] = 'Mean outgoing interaction energy' if interaction_direction.lower()=='out' else 'Mean incoming interaction energy'
+            elif energy_type.lower() == 'degradation':
+                plot_data['energy'] = {k: np.mean(self.degradation_energy_decomposed(k)[:,genes_in], axis=0) for k in order}
+                plot_labels['energy'] = 'Mean degradation energy'
+            elif energy_type.lower() == 'bias':
+                plot_data['energy'] = {k: np.mean(self.bias_energy_decomposed(k)[:,genes_in], axis=0) for k in order}
+                plot_labels['energy'] = 'Mean bias energy'
+            else:
+                raise ValueError('Energy type not recognized.')
+        
+        for k,ax in zip(order, axs.flat):
+            
+            axis1_data = plot_data[axis1][k]
+            axis2_data = plot_data[axis2][k]
+
+            ax.set_title(k)
+            ax.set_xlabel(plot_labels[axis1])
+            ax.set_ylabel(plot_labels[axis2])
+
+            ax.scatter(axis1_data, axis2_data, color='gray', alpha=0.5, s=4)
+
+            threshold_axis1 = np.sort(abs(axis1_data))[::-1][top_n_axis1]
+            threshold_axis2 = np.sort(abs(axis2_data))[::-1][top_n_axis2]
+
+            for x, y, gene in zip(axis1_data, axis2_data, ls.gene_names):
+                if (x > threshold_axis1) or (y > threshold_axis2):
+                    ax.scatter(x, y, color='blue', s=1)
+                    random_offset_x = np.random.uniform(-0.5, 1) * (max(axis1_data) - min(axis1_data)) * 0.1
+                    random_offset_y = np.random.uniform(-0.5, 1) * (max(axis2_data) - min(axis2_data)) * 0.05
+                    ax.annotate(gene, xy=(x, y), xytext=(x + random_offset_x, y + random_offset_y),
+                                textcoords='data', fontsize=8, arrowprops=dict(arrowstyle="->", color='gray', lw=0.5))
+                
+
+        plt.show()
+
     def simulate_cell(self, cluster, x0=None, time=10, n_steps=100, noise=0, solver=None, clip=False):
         """
         Simulate the trajectory of a single cell over time within a specific cluster.
