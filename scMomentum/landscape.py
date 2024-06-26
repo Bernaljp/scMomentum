@@ -139,11 +139,11 @@ class Landscape:
         
         # Compute sigmoid function of x
         sig = self.get_sigmoid()
-        print('Inferring interaction matrix W and bias vector I for all cells')
         self.W = {}
         self.I = {}
         # If not skipping all calculations
         if not skip_all:
+            print('Inferring interaction matrix W and bias vector I for all cells')
             # If the criterion is not 'L2', use a specific method for fitting
             if criterion != 'L2':
                 model = OptimizerLandscape(g, rank, low_rank, device)
@@ -1263,7 +1263,7 @@ class Landscape:
         ax.set_zlabel('Energy')
         ax.legend(title='Cluster')
 
-    def plot_gene_data(self, axis1, axis2,  energy_type, top_n_axis1, top_n_axis2, order=None, interaction_direction=None, exclude_genes=[]):
+    def plot_gene_data(self, axis1, axis2,  energy_type, top_n_axis1=1, top_n_axis2=1, order=None, interaction_direction=None, exclude_genes=[], show=False, **fig_kws):
         """
         Generalized plotting method for gene data.
 
@@ -1280,8 +1280,8 @@ class Landscape:
 
         # threshold_axis1 = {k: threshold_axis1 for k in order} if not isinstance(threshold_axis1, dict) else threshold_axis1
         # threshold_axis2 = {k: threshold_axis2 for k in order} if not isinstance(threshold_axis2, dict) else threshold_axis2
-
-        fig, axs = plt.subplots(2, n_plots//2, figsize=(10, 6), tight_layout=True, sharex=True)
+        figsize = fig_kws.pop('figsize', (10, 6))
+        fig, axs = plt.subplots(2, n_plots//2, figsize=figsize, tight_layout=True, sharex=True)
         # Prepare data based on axis1 and axis2
         plot_data = {}
         plot_labels = {}
@@ -1291,7 +1291,7 @@ class Landscape:
         if 'rate' in [axis1, axis2]:
             if energy_type.lower() == 'interaction':
                 plot_data['rate'] = {k: self.W[k].sum(axis=1)[genes_in] for k in order} if interaction_direction.lower()=='in' else {k: self.W[k].sum(axis=0)[genes_in] for k in order}
-                plot_labels['rate'] = 'Total ourgoing interaction rate' if interaction_direction.lower()=='out' else 'Total incoming interaction rate'
+                plot_labels['rate'] = 'Total outgoing interaction rate' if interaction_direction.lower()=='out' else 'Total incoming interaction rate'
             elif energy_type.lower() == 'degradation':
                 plot_data['rate'] = {k: self.adata.var[self.gamma_key][self.genes].values[genes_in] for k in order}
                 plot_labels['rate'] = 'Degradation rate'
@@ -1343,16 +1343,18 @@ class Landscape:
             threshold_axis1 = np.sort(abs(axis1_data))[::-1][top_n_axis1]
             threshold_axis2 = np.sort(abs(axis2_data))[::-1][top_n_axis2]
 
-            for x, y, gene in zip(axis1_data, axis2_data, ls.gene_names):
-                if (x > threshold_axis1) or (y > threshold_axis2):
+            for x, y, gene in zip(axis1_data, axis2_data, self.gene_names):
+                if (abs(x) > threshold_axis1) or (abs(y) > threshold_axis2):
                     ax.scatter(x, y, color='blue', s=1)
                     random_offset_x = np.random.uniform(-0.5, 1) * (max(axis1_data) - min(axis1_data)) * 0.1
                     random_offset_y = np.random.uniform(-0.5, 1) * (max(axis2_data) - min(axis2_data)) * 0.05
                     ax.annotate(gene, xy=(x, y), xytext=(x + random_offset_x, y + random_offset_y),
                                 textcoords='data', fontsize=8, arrowprops=dict(arrowstyle="->", color='gray', lw=0.5))
                 
-
-        plt.show()
+        if show:
+            plt.show()
+        else:
+            return fig, axs
 
     def simulate_cell(self, cluster, x0=None, time=10, n_steps=100, noise=0, solver=None, clip=False):
         """

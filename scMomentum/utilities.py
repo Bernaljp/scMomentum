@@ -110,6 +110,45 @@ def int_sig_act_inv(x, s, n, verbose=False):
     
     return z1 - z
 
+#alternative degradation energy integral
+# def int_sig_act_inv(x, s, n, verbose=False):
+#     """
+#     Compute the integral of the inverse sigmoid activation function.
+
+#     Args:
+#         x (np.ndarray): Input data array.
+#         s (float): Sigmoid threshold parameter.
+#         n (float): Sigmoid steepness parameter.
+#         verbose (bool): If True, prints intermediate computation results.
+
+#     Returns:
+#         np.ndarray: Integral of the inverse sigmoid activation.
+#     """
+#     z = -(n / (n - 1)) * s * hyper(-1 / n, (n - 1) / n, (2 * n - 1) / n, 1)
+#     z = z[None, :]
+#     n = n[None, :]
+#     s = s[None, :]
+#     z1 = -n * s * (1 - x) ** ((n - 1) / n) * hyper(-1 / n, (n - 1) / n, (2 * n - 1) / n, 1 - x) / (n - 1)
+    
+#     if verbose:
+#         print(z[0])
+#         print(z1)
+    
+#     return z1 - z - s*(x-0.5)
+
+# def int_sig_act_inv(x, s, n):
+
+#     n = n[None, :]
+#     s = s[None, :]
+#     integral = lambda x: -n * s * (1 - x) ** ((n - 1) / n) * hyper(-1 / n, (n - 1) / n, (2 * n - 1) / n, 1 - x) / (n - 1)
+
+#     Phi_05 = integral(0.5)
+#     Phi_z = integral(x)
+    
+    
+#     return np.sign(x-0.5)*(Phi_z - Phi_05 - s*(x-0.5))
+
+
 def d_sigmoid(x, s, n):
     """
     Compute the derivative of the sigmoid function with respect to x.
