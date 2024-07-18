@@ -1,4 +1,5 @@
 import anndata
+from collections import defaultdict
 import dynamo as dyn
 from functools import partial
 import hoggorm as ho
@@ -943,8 +944,8 @@ class Landscape:
         """
         
         # Retrieve the correlation data for each cluster based on the specified energy type
-        corr1 = getattr(self, f'correlation_{energy}')[clus1]
-        corr2 = getattr(self, f'correlation_{energy}')[clus2]
+        corr1 = getattr(self, f'correlation_{energy}')[clus1] if energy.lower() != 'total' else self.correlation[clus1]
+        corr2 = getattr(self, f'correlation_{energy}')[clus2] if energy.lower() != 'total' else self.correlation[clus2]
 
         # Create a new figure and axes if none are provided
         if ax is None:
@@ -1263,7 +1264,7 @@ class Landscape:
         ax.set_zlabel('Energy')
         ax.legend(title='Cluster')
 
-    def plot_gene_data(self, axis1, axis2,  energy_type, top_n_axis1=1, top_n_axis2=1, order=None, interaction_direction=None, exclude_genes=[], show=False, **fig_kws):
+    def plot_gene_data(self, axis1, axis2,  energy_type, energy_type_2=None, top_n_axis1=1, top_n_axis2=1, order=None, interaction_direction=None, exclude_genes=[], show=False, **fig_kws):
         """
         Generalized plotting method for gene data.
 
@@ -1277,66 +1278,65 @@ class Landscape:
         order = self.adata.obs[self.cluster_key].unique() if order is None else order
         n_plots =  len(order) + 1
         interaction_direction = 'in' if interaction_direction is None else interaction_direction
+        energy_type_2 = energy_type if energy_type_2 is None else energy_type_2
 
         # threshold_axis1 = {k: threshold_axis1 for k in order} if not isinstance(threshold_axis1, dict) else threshold_axis1
         # threshold_axis2 = {k: threshold_axis2 for k in order} if not isinstance(threshold_axis2, dict) else threshold_axis2
         figsize = fig_kws.pop('figsize', (10, 6))
         fig, axs = plt.subplots(2, n_plots//2, figsize=figsize, tight_layout=True, sharex=True)
         # Prepare data based on axis1 and axis2
-        plot_data = {}
-        plot_labels = {}
+        plot_data = {'rate':{}, 'expression':{}, 'energy':{}}
+        plot_labels = {'rate':{}, 'expression':{}, 'energy':{}}
 
         genes_in = np.where(~np.isin(self.gene_names, exclude_genes))[0]
 
         if 'rate' in [axis1, axis2]:
-            if energy_type.lower() == 'interaction':
-                plot_data['rate'] = {k: self.W[k].sum(axis=1)[genes_in] for k in order} if interaction_direction.lower()=='in' else {k: self.W[k].sum(axis=0)[genes_in] for k in order}
-                plot_labels['rate'] = 'Total outgoing interaction rate' if interaction_direction.lower()=='out' else 'Total incoming interaction rate'
-            elif energy_type.lower() == 'degradation':
-                plot_data['rate'] = {k: self.adata.var[self.gamma_key][self.genes].values[genes_in] for k in order}
-                plot_labels['rate'] = 'Degradation rate'
-            elif energy_type.lower() == 'bias':
-                plot_data['rate'] = {k: self.I[k][genes_in] for k in order}
-                plot_labels['rate'] = 'Bias rate'
-            else:
-                raise ValueError('No rate associated to energy type.')
+            if (energy_type.lower() == 'interaction') or (energy_type_2.lower() == 'interaction'):
+                plot_data['rate']['interaction'] = {k: self.W[k].sum(axis=0)[genes_in] for k in order} if interaction_direction.lower()=='in' else {k: self.W[k].sum(axis=1)[genes_in] for k in order}
+                plot_labels['rate']['interaction'] = 'Total outgoing interaction rate' if interaction_direction.lower()=='out' else 'Total incoming interaction rate'
+            if (energy_type.lower() == 'degradation') or (energy_type_2.lower() == 'degradation'):
+                plot_data['rate']['degradation'] = {k: self.adata.var[self.gamma_key][self.genes].values[genes_in] for k in order}
+                plot_labels['rate']['degradation'] = 'Degradation rate'
+            if (energy_type.lower() == 'bias') or (energy_type_2.lower() == 'bias'):
+                plot_data['rate']['bias'] = {k: self.I[k][genes_in] for k in order}
+                plot_labels['rate']['bias'] = 'Bias rate'
                 
         if 'expression' in [axis1, axis2]:
             M = self.get_matrix(self.spliced_matrix_key)[:, self.genes[genes_in]]
-            plot_data['expression'] = {}
+            expression_dict = {}
+
             for k in order:
                 cidxs = np.where(self.adata.obs[self.cluster_key]==k)[0]
-                plot_data['expression'][k] = np.mean(M[cidxs],axis=0).A.squeeze()
-            
-            plot_labels['expression'] = 'Mean gene expression'
+                expression_dict[k] = np.mean(M[cidxs],axis=0).A.squeeze()
+
+            plot_data['expression'] = defaultdict(lambda: expression_dict)
+            plot_labels['expression'] = defaultdict(lambda: 'Mean gene expression')
         
         if 'energy' in [axis1, axis2]:
             if energy_type.lower() == 'total':
-                plot_data['energy'] = {k: np.mean(self.interaction_energy_decomposed(k, interaction_direction)[:,genes_in]\
+                plot_data['energy']['total'] = {k: np.mean(self.interaction_energy_decomposed(k, interaction_direction)[:,genes_in]\
                                 + self.degradation_energy_decomposed(k)[:,genes_in]\
                                 + self.bias_energy_decomposed(k)[:,genes_in], axis=0) for k in order}
-                plot_labels['energy'] = 'Total energy'
+                plot_labels['energy']['total'] = 'Total energy'
 
-            elif energy_type.lower() == 'interaction':
-                plot_data['energy'] = {k: np.mean(self.interaction_energy_decomposed(k, interaction_direction)[:,genes_in], axis=0) for k in order}
-                plot_labels['energy'] = 'Mean outgoing interaction energy' if interaction_direction.lower()=='out' else 'Mean incoming interaction energy'
-            elif energy_type.lower() == 'degradation':
-                plot_data['energy'] = {k: np.mean(self.degradation_energy_decomposed(k)[:,genes_in], axis=0) for k in order}
-                plot_labels['energy'] = 'Mean degradation energy'
-            elif energy_type.lower() == 'bias':
-                plot_data['energy'] = {k: np.mean(self.bias_energy_decomposed(k)[:,genes_in], axis=0) for k in order}
-                plot_labels['energy'] = 'Mean bias energy'
-            else:
-                raise ValueError('Energy type not recognized.')
+            if (energy_type.lower() == 'interaction') or (energy_type_2.lower() == 'interaction'):
+                plot_data['energy']['interaction'] = {k: np.mean(self.interaction_energy_decomposed(k, interaction_direction)[:,genes_in], axis=0) for k in order}
+                plot_labels['energy']['interaction'] = 'Mean outgoing interaction energy' if interaction_direction.lower()=='out' else 'Mean incoming interaction energy'
+            if (energy_type.lower() == 'degradation') or (energy_type_2.lower() == 'degradation'):
+                plot_data['energy']['degradation'] = {k: np.mean(self.degradation_energy_decomposed(k)[:,genes_in], axis=0) for k in order}
+                plot_labels['energy']['degradation'] = 'Mean degradation energy'
+            if (energy_type.lower() == 'bias') or (energy_type_2.lower() == 'bias'):
+                plot_data['energy']['bias'] = {k: np.mean(self.bias_energy_decomposed(k)[:,genes_in], axis=0) for k in order}
+                plot_labels['energy']['bias'] = 'Mean bias energy'
         
         for k,ax in zip(order, axs.flat):
             
-            axis1_data = plot_data[axis1][k]
-            axis2_data = plot_data[axis2][k]
+            axis1_data = plot_data[axis1][energy_type][k]
+            axis2_data = plot_data[axis2][energy_type_2][k]
 
             ax.set_title(k)
-            ax.set_xlabel(plot_labels[axis1])
-            ax.set_ylabel(plot_labels[axis2])
+            ax.set_xlabel(plot_labels[axis1][energy_type])
+            ax.set_ylabel(plot_labels[axis2][energy_type_2])
 
             ax.scatter(axis1_data, axis2_data, color='gray', alpha=0.5, s=4)
 
