@@ -431,7 +431,8 @@ class Landscape:
             x = self.get_matrix(self.spliced_matrix_key, genes=self.genes).A
 
         # Compute the sigmoid function of x using the class's threshold and exponent parameters
-        sigmoid_output = sigmoid(x, self.threshold[None, :], self.exponent[None, :])
+        sigmoid_output = np.nan_to_num(sigmoid(x, self.threshold[None, :], self.exponent[None, :]))
+        
 
         return sigmoid_output
 
@@ -706,7 +707,7 @@ class Landscape:
         plt.tight_layout()
         return axs
 
-    def plot_energy_scatters(self, basis='umap', plot_energy = 'all', show_legend = False, **fig_kws):
+    def plot_energy_scatters(self, basis='umap', order=None, plot_energy = 'all', show_legend = False, **fig_kws):
         """
         Plot the energy landscapes for different clusters using 3D scatter plots.
 
@@ -714,6 +715,8 @@ class Landscape:
             basis (str): The basis used for embedding, default is 'umap'.
             **fig_kws: Additional keyword arguments for plot customization.
         """
+        order = self.adata.obs[self.cluster_key].unique() if order is None else order
+        
         if plot_energy == 'all':
             fig, axs = plt.subplots(2, 2, subplot_kw={'projection': '3d'}, **fig_kws)
             # Set titles
@@ -730,7 +733,7 @@ class Landscape:
             axs = np.array([axs])
             es = [getattr(self, f'E_{plot_energy.lower()}')]
 
-        for k in self.adata.obs[self.cluster_key].unique():
+        for k in order:
             cells = self.adata.obsm[f'X_{basis}'][self.adata.obs[self.cluster_key] == k][:, :2]
             for ax, energy_type in zip(axs, es):
                 energies = energy_type[k]
@@ -923,7 +926,7 @@ class Landscape:
         
         if return_corr:
             # Return the collected correlation values as a string for all processed clusters
-            return '\n'.join([f"{cl}: {corr:.3f}" for cl, corr in correlation_values.items()])
+            return '\n'.join([f"{cl}-{g}: {corr:.3f}" for cl, cors in correlation_values.items() for g, corr in zip(names, cors)])
 
     def plot_gene_correlation_scatter(self, clus1, clus2, annotate=None, clus1_low=-0.5, clus1_high=0.5, clus2_low=-0.5, clus2_high=0.5, energy='total', ax=None):
         """
