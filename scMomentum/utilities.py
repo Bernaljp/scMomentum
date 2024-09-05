@@ -204,3 +204,11 @@ def rezet(gridX, gridY, energySurface, points):
     grid_points = np.array([gridX.ravel(), gridY.ravel()]).T
     energy_values = griddata(grid_points, energySurface.ravel(), points, method='cubic')
     return energy_values
+
+def ordinal(n: int):
+    if 11 <= (n % 100) <= 13:
+        suffix = 'th'
+    else:
+        suffix = ['th', 'st', 'nd', 'rd', 'th'][min(n % 10, 4)]
+    return str(n) + suffix
+

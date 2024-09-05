@@ -11,6 +11,7 @@ import pickle
 from scipy.spatial.distance import cdist
 import seaborn as sns
 import torch
+from tqdm import tqdm
 from typing import Union, List
 import umap  # Ensure UMAP is imported, consider handling ImportError for environments without UMAP
 from .utilities import *  # Make sure to import the utilities module for using utility functions
@@ -374,7 +375,7 @@ class Landscape:
         W = self.W[cl]
         return -0.5*(sig @ W) * sig if side == 'in' else -0.5*(sig @ W.T) * sig
         
-    def jacobian(self, x):
+    def jacobian_for_cell(self, cell):
         """
         Compute the Jacobian matrix for each point in x based on the model parameters.
 
@@ -384,6 +385,7 @@ class Landscape:
         Returns:
             List[np.ndarray]: List of Jacobian matrices for each point in x.
         """
+        x = cell
         # Adjust the shape of exponent and threshold parameters based on the shape of x
         ex, th = (self.exponent, self.threshold) if x.ndim == 1 else (self.exponent[:, None], self.threshold[:, None])
 
@@ -975,7 +977,7 @@ class Landscape:
         if annotate is not None:
             nn = annotate
             # Get top 6 genes with the highest absolute correlation values
-            cor_indices = np.argsort(np.abs(corr1[corr_corners]) + np.abs(corr2[corr_corners]))[-nn:]
+            cor_indices = np.argsort((corr1[corr_corners])**2 + (corr2[corr_corners])**2)[-nn:]
             # Get the names of the top 6 genes with the highest absolute correlation values
             gois = self.gene_names[corr_corners][cor_indices]
             # Adding labels for the top 6 genes with the highest absolute correlation values
@@ -1175,6 +1177,94 @@ class Landscape:
         # Store the computed metrics
         self.jaccard, self.hamming, self.euclidean, self.pearson, self.pearson_bin, self.mean_col_corr, self.singular = \
             jaccard, hamming, euclidean, pearson, pearson_bin, mean_col, singular
+            
+
+    def compute_jacobians(self, save_to_disk=False, save_dir=None, compute_eigenvectors=False, device='cpu'):
+
+        """Set up storage for Jacobians, eigenvectors, and eigenvalues."""
+        n_genes = len(self.genes)
+        n_cells = self.adata.n_obs
+        
+        if save_to_disk:
+            # Use np.memmap for disk-based storage
+            self.jacobian = np.memmap(f'{save_dir}/jacobian.dat', dtype=np.float64, mode='w+', shape=(n_cells, n_genes, n_genes))
+            self.jacobian_eigenvalues = np.memmap(f'{save_dir}/jacobian_eigenvalues.dat', dtype=np.complex128, mode='w+', shape=(n_cells, n_genes))
+            if compute_eigenvectors:
+                self.jacobian_eigenvectors = np.memmap(f'{save_dir}/jacobian_eigenvectors.dat', dtype=np.complex128, mode='w+', shape=(n_cells, n_genes, n_genes))
+        else:
+            # Use numpy arrays for memory-based storage
+            self.jacobian = np.zeros((n_cells, n_genes, n_genes), dtype=np.float64)
+            self.jacobian_eigenvalues = np.zeros((n_cells, n_genes), dtype=np.complex128)
+            if compute_eigenvectors:
+                self.jacobian_eigenvectors = np.zeros((n_cells, n_genes, n_genes), dtype=np.complex128)
+        
+        device = 'cuda' if ((device=='cuda') & torch.cuda.is_available()) else 'cpu'
+        gamma = torch.diag(torch.tensor(self.adata.var[self.gamma_key][self.genes].values.astype(list(self.W.values())[0].dtype), device=device))
+        """Compute Jacobians and optionally eigenvectors for all clusters."""
+        for cluster_label in self.W:
+            # Skip the iteration if the cluster label is 'all'
+            if cluster_label == 'all':
+                continue
+
+            # Access the weight matrix for the current cluster and move it to the GPU
+            W = torch.tensor(self.W[cluster_label], device=device)
+
+            # Find the indices of cells belonging to the current cluster
+            cluster_indices = np.where(self.adata.obs[self.cluster_key] == cluster_label)[0]
+
+            # Extract the gene expression data for the cells in the current cluster
+            cell_data = torch.tensor(self.adata.layers[self.spliced_matrix_key][cluster_indices][:, self.genes].A, device=device)
+
+            # Compute the sigmoid function and its first and second derivatives
+            sigmoid_values = torch.tensor(self.get_sigmoid(cell_data.cpu().numpy()), device=device)
+            sigmoid_prime = torch.tensor(self.exponent, device=device) * sigmoid_values * (1 - sigmoid_values) / ((1 - cell_data) * (cell_data == 0) + cell_data)
+
+            # Update velocity fields and Jacobian matrices for each cell in the current cluster
+            for idx, sig_prime_val in tqdm(zip(cluster_indices, sigmoid_prime), total=len(cluster_indices)):
+                # Perform calculations on the GPU
+                jac_f = W.T * sig_prime_val.view(-1,1) - gamma
+
+                eigenvalues, eigenvectors = torch.linalg.eig(jac_f) if compute_eigenvectors else (torch.linalg.eigvals(jac_f), None)
+
+                # Store the results
+                self.jacobian_eigenvalues[idx] = eigenvalues.cpu().numpy()
+                if compute_eigenvectors:
+                    self.jacobian_eigenvectors[idx] = eigenvectors.cpu().numpy()
+                self.jacobian[idx] = jac_f.cpu().numpy()
+
+                # If saving to disk, flush data to persist it
+                if save_to_disk:
+                    self.jacobian_eigenvalues.flush()
+                    if compute_eigenvectors:
+                        self.jacobian_eigenvectors.flush()
+                    self.jacobian.flush()
+
+
+    def plot_jacobian_summary(self, fig_size=(10, 5), part='real', show=False):
+
+        self.adata.obs['eval_positive_tmp'] = np.sum(np.real(self.jacobian_eigenvalues) > 0.1, axis=1)
+        self.adata.obs['eval_mean_tmp'] = np.mean(np.real(self.jacobian_eigenvalues), axis=1) if part == 'real' else np.mean(np.imag(self.jacobian_eigenvalues[:,::2]), axis=1)
+
+        fig,axs = plt.subplots(1,2,figsize=fig_size)
+        dyn.pl.streamline_plot(self.adata, basis='umap', color='eval_positive_tmp', ax=axs[0], save_show_or_return='return')
+        dyn.pl.streamline_plot(self.adata, basis='umap', color='eval_mean_tmp', ax=axs[1], save_show_or_return='return')
+
+        axs[0].set_title(f'Number of positive eigenvalues\n Jacobian')
+        axs[1].set_title(f'Mean of {part} part of eigenvalues\n Jacobian')
+
+        if show:
+            plt.show()
+        del self.adata.obs['eval_positive_tmp'], self.adata.obs['eval_mean_tmp']
+
+    def plot_jacobian_eigenvalue(self, n, part='real', ax=None, **kwargs):
+        figsize = kwargs.get('figsize',(15,10))
+        cmap = kwargs.get('cmap','viridis')
+        _,ax = plt.subplots(1, 1, figsize=figsize) if ax is None else (None,ax)
+        part = np.real if part=='real' else np.imag
+        self.adata.obs[f'Eigenvalue {n+1}'] = part(self.adata.layers[f'jacobian_eigenvalues'][:,self.adata.var['use_for_dynamics'].values][:,n].A.flatten())
+        _ = dyn.pl.streamline_plot(self.adata, color=f'Eigenvalue {n+1}', basis='umap', size=(15,10), show_legend='on data', cmap=cmap, show_arrowed_spines=True, ax=ax, save_show_or_return='return')
+        # plt.show()
+        del self.adata.obs[f'Eigenvalue {n+1}']
 
     def plot_energy_surface_2d(self, clusters='all', energy='total', basis='UMAP', plot_cells=True, ax=None, **kwargs):
         """
