@@ -13,7 +13,7 @@
 Install `scMomentum` directly from GitHub using pip:
 
 ```bash
-pip install git+https://github.com/yourusername/scMomentum.git
+pip install git+https://github.com/bernaljp/scMomentum.git
 ```
 
 Ensure you have all the necessary dependencies installed by checking the `requirements.txt` file.
