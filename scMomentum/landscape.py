@@ -374,7 +374,36 @@ class Landscape:
         sig = self.get_sigmoid(x) if x is not None else self.get_sigmoid()[idx, :]
         W = self.W[cl]
         return -0.5*(sig @ W) * sig if side == 'in' else -0.5*(sig @ W.T) * sig
+    
+    def hopfield_model(self, cl, x=None):
+        """
+        Compute the Hopfield model for the dataset using the sigmoid activation function.
+
+        Args:
+            x (np.ndarray, optional): Input data for which to compute the Hopfield model.
+                                    If None, the method uses the spliced matrix from the AnnData object.
+
+        Returns:
+            np.ndarray: The Hopfield model applied to the input data.
+        """
+        idx = self.adata.obs[self.cluster_key] == cl if x is None else slice(None)
+        sig = self.get_sigmoid(x)[idx, :]
+        W = self.W[cl]
+        # Use the entire spliced matrix if x is not provided
+        if x is None:
+            x = self.get_matrix(self.spliced_matrix_key, genes=self.genes).A
+
+        g = self.adata.var[self.gamma_key][self.genes].values.astype(x.dtype)
         
+        xdot = sig @ W - g[None, :] * x + self.I[cl]
+
+        return xdot
+
+        # Compute the Hopfield model using the sigmoid function values
+        
+
+        
+
     def jacobian_for_cell(self, cell):
         """
         Compute the Jacobian matrix for each point in x based on the model parameters.
@@ -803,44 +832,7 @@ class Landscape:
         top_genes_names = self.gene_names[top_genes_indices]
         plot = 'correlation' if plot_correlations else 'expression'
         self.plot_gene_correlation(top_genes_names, energy=energy, cluster=cluster, absolute=absolute, basis=basis, return_corr=False, plot=plot, **fig_kws)
-        # top_genes_corr = [{k: corr[k][gene] for k,corr in corr_dict.items()} for gene in top_genes_indices]
-        # figsize = fig_kws.get('figsize', (6,4))
-        # # Plot each gene
-        # if plot_correlations:
-        #     # 1. Backup 'M_uu'
-        #     M_uu_exists = 'M_uu' in self.adata.layers
-        #     if M_uu_exists:
-        #         backup_M_uu = self.adata.layers['M_uu'].copy()
-        #     else:
-        #         self.adata.layers['M_uu'] = np.zeros((self.adata.n_obs, self.adata.n_vars))
 
-        #     # Modify 'M_uu' with correlation values for top genes
-        #     for gene_name, gene_corr in zip(top_genes_names, top_genes_corr):
-        #         gene_index = np.where(self.adata.var_names == gene_name)[0][0]
-        #         for k in gene_corr:
-        #             self.adata.layers['M_uu'][self.adata.obs[self.cluster_key] == k, gene_index] = gene_corr[k]
-        #         # self.adata.layers['M_uu'][:, gene_index] = gene_corr
-
-        #     # Plot all top genes at once using dyn.pl.scatters
-        #     axs = dyn.pl.scatters(self.adata, basis=basis, color=top_genes_names, layer='M_uu', save_show_or_return='return', ncols=3, cmap='RdBu', vmin=-1, vmax=1, figsize=figsize)
-
-        #     # Set titles for each subplot
-        #     for ax, gene_name, gene_corr in zip(axs, top_genes_names, top_genes_corr):
-        #         ax.set_title(f"Correlation of {gene_name} with energy: {gene_corr:.3f}")
-
-        #     # Restore 'M_uu' if it existed, otherwise delete the temporary layer
-        #     if M_uu_exists:
-        #         self.adata.layers['M_uu'] = backup_M_uu
-        #     else:
-        #         del self.adata.layers['M_uu']
-
-        # else:
-        #     # Plotting gene expression without modifying 'M_uu'
-        #     axs = dyn.pl.scatters(self.adata, basis=basis, color=top_genes_names, save_show_or_return='return', ncols=3, figsize=figsize)
-
-        #     # Set titles for each subplot
-        #     for ax, gene_name in zip(axs, top_genes_names):
-        #         ax.set_title(f"Expression of {gene_name}")
 
     def plot_gene_correlation(self, genes, energy='total', cluster='all', absolute=False, basis='umap', return_corr=False, plot='correlation', **fig_kws):
         """
