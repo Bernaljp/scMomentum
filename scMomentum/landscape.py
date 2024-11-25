@@ -48,7 +48,7 @@ class Landscape:
         if not manual_fit:
             # Fit sigmoids and heavysides for all genes
             self.fit_all_sigmoids()  # Adjust 'th' as necessary
-
+            self.write_sigmoids()
             # Fit interactions
             self.fit_interactions(w_threshold=w_threshold, infer_I=infer_I, n_epochs=n_epochs, low_rank=low_rank, rank=rank, device=device, skip_all=skip_all, criterion=criterion)
 
@@ -140,7 +140,7 @@ class Landscape:
         g = self.adata.var[self.gamma_key][self.genes].values.astype(x.dtype)
         
         # Compute sigmoid function of x
-        sig = self.get_sigmoid()
+        sig = self.get_matrix('sigmoid', genes=self.genes)
         self.W = {}
         self.I = {}
         # If not skipping all calculations
@@ -161,7 +161,7 @@ class Landscape:
             else:
                 # Default method for fitting when criterion is 'L2'
                 rhs = np.hstack((sig, np.ones((sig.shape[0], 1), dtype=x.dtype))) if infer_I else sig
-                WI = np.linalg.lstsq(rhs, v + g[None, :] * x, rcond=1e-5)[0]
+                WI = np.linalg.pinv(rhs) @ (v + g[None, :] * x)
                 WI[np.abs(WI) < w_threshold] = 0
                 self.W['all'] = WI[:-1, :] if infer_I else WI
                 self.I['all'] = WI[-1, :] if infer_I else -np.clip(WI, a_min=None, a_max=0).sum(axis=0)
@@ -196,6 +196,13 @@ class Landscape:
                     WI_cluster[np.abs(WI_cluster) < w_threshold] = 0
                     self.W[ct] = WI_cluster[:-1, :] if infer_I else WI_cluster
                     self.I[ct] = WI_cluster[-1, :] if infer_I else -np.clip(WI_cluster, a_min=None, a_max=0).sum(axis=0)
+    
+    def write_sigmoids(self):
+        sig = self.get_sigmoid()
+        sigmoids = np.zeros(list(self.adata.layers.values())[0].shape, dtype=sig.dtype)
+        sigmoids[:, self.genes] = sig
+        self.write_property('sigmoid', sigmoids)
+        self.sigmoids = self.adata.layers['sigmoid']
 
     def get_energies(self, x=None):
         """
@@ -275,7 +282,7 @@ class Landscape:
         """
         # Determine the indices for the cluster or use all indices
         idx = self.adata.obs[self.cluster_key] == cl if cl != 'all' else slice(None)
-        sig = self.get_sigmoid(x) if x is not None else self.get_sigmoid()[idx, :]
+        sig = self.get_sigmoid(x) if x is not None else self.get_matrix('sigmoid', genes=self.genes)[idx]
         W = self.W[cl]
         
         # Calculate the interaction energy
@@ -297,7 +304,7 @@ class Landscape:
         idx = self.adata.obs[self.cluster_key] == cl if cl != 'all' else slice(None)
         g = self.adata.var[self.gamma_key][self.genes].values
 
-        sig = self.get_sigmoid(x) if x is not None else self.get_sigmoid()[idx, :]
+        sig = self.get_sigmoid(x) if x is not None else self.get_matrix('sigmoid', genes=self.genes)[idx]
         integral = int_sig_act_inv(sig, self.threshold, self.exponent)
         degradation_energy = np.sum(g[None, :] * integral, axis=1)
         
@@ -316,7 +323,7 @@ class Landscape:
             np.ndarray: Calculated bias energy.
         """
         idx = self.adata.obs[self.cluster_key] == cl if cl != 'all' else slice(None)
-        sig = self.get_sigmoid(x) if x is not None else self.get_sigmoid()[idx, :]
+        sig = self.get_sigmoid(x) if x is not None else self.get_matrix('sigmoid', genes=self.genes)[idx]
         I = self.I[cl]
         
         # Calculate the bias energy
@@ -338,7 +345,7 @@ class Landscape:
         idx = self.adata.obs[self.cluster_key] == cl if cl != 'all' else slice(None)
         g = self.adata.var[self.gamma_key][self.genes].values
 
-        sig = self.get_sigmoid(x) if x is not None else self.get_sigmoid()[idx, :]
+        sig = self.get_sigmoid(x) if x is not None else self.get_matrix('sigmoid', genes=self.genes)[idx]
         integral = int_sig_act_inv(sig, self.threshold, self.exponent)
         return g[None, :] * integral
 
@@ -354,7 +361,7 @@ class Landscape:
             np.ndarray: Decomposed bias energy for each gene.
         """
         idx = self.adata.obs[self.cluster_key] == cl if cl != 'all' else slice(None)
-        sig = self.get_sigmoid(x) if x is not None else self.get_sigmoid()[idx, :]
+        sig = self.get_sigmoid(x) if x is not None else self.get_matrix('sigmoid', genes=self.genes)[idx]
         I = self.I[cl]
         return -I[None, :] * sig
     
@@ -371,7 +378,7 @@ class Landscape:
             np.ndarray: Decomposed interaction energy for each gene.
         """
         idx = self.adata.obs[self.cluster_key] == cl if cl != 'all' else slice(None)
-        sig = self.get_sigmoid(x) if x is not None else self.get_sigmoid()[idx, :]
+        sig = self.get_sigmoid(x) if x is not None else self.get_matrix('sigmoid', genes=self.genes)[idx]
         W = self.W[cl]
         return -0.5*(sig @ W) * sig if side == 'in' else -0.5*(sig @ W.T) * sig
     
@@ -387,7 +394,7 @@ class Landscape:
             np.ndarray: The Hopfield model applied to the input data.
         """
         idx = self.adata.obs[self.cluster_key] == cl if x is None else slice(None)
-        sig = self.get_sigmoid(x)[idx, :]
+        sig = self.get_sigmoid(x) if x is not None else self.get_matrix('sigmoid', genes=self.genes)[idx]
         W = self.W[cl]
         # Use the entire spliced matrix if x is not provided
         if x is None:
@@ -419,7 +426,7 @@ class Landscape:
         ex, th = (self.exponent, self.threshold) if x.ndim == 1 else (self.exponent[:, None], self.threshold[:, None])
 
         # Compute the sigmoid function values for x
-        sig = sigmoid(x, th, ex)
+        sig = self.get_sigmoid(x)
 
         # Retrieve the spliced matrix and compute distances to each point in x
         matrix = self.adata.layers[self.spliced_matrix_key][:, self.genes].toarray()
