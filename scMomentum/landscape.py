@@ -15,7 +15,7 @@ from tqdm import tqdm
 from typing import Union, List
 import umap  # Ensure UMAP is imported, consider handling ImportError for environments without UMAP
 from .utilities import *  # Make sure to import the utilities module for using utility functions
-from .optimizer_landscape import OptimizerLandscape, CustomDataset
+from .optimizer_landscape import OptimizerLandscape, ScaffoldOptimizer, CustomDataset
 from .ode_solver import ODESolver
 
 class Landscape:
@@ -27,12 +27,14 @@ class Landscape:
                  genes: Union[None, List[str], List[bool], List[int]] = None,
                  cluster_key: Union[None, str] = None,
                  w_threshold: float = 1e-5,
+                 w_scaffold: Union[None, np.ndarray] = None,
                  infer_I: bool = False,
                  criterion: str = 'L2',
                  n_epochs: int = 1000,
                  low_rank: bool = True,
                  rank: int = 10,
                  device: str = 'cpu',
+                 use_scheduler: bool = False,
                  skip_all: bool = False,
                  manual_fit: bool = False,):
         
@@ -44,13 +46,14 @@ class Landscape:
         self.gene_names = self.adata.var.index[self.genes]
         self.cluster_key = cluster_key
         self.clusters = self.adata.obs[self.cluster_key].unique() if self.cluster_key else []
+        self.scaffold = w_scaffold
 
         if not manual_fit:
             # Fit sigmoids and heavysides for all genes
             self.fit_all_sigmoids()  # Adjust 'th' as necessary
             self.write_sigmoids()
             # Fit interactions
-            self.fit_interactions(w_threshold=w_threshold, infer_I=infer_I, n_epochs=n_epochs, low_rank=low_rank, rank=rank, device=device, skip_all=skip_all, criterion=criterion)
+            self.fit_interactions(w_threshold=w_threshold, w_scaffold=w_scaffold, infer_I=infer_I, n_epochs=n_epochs, low_rank=low_rank, rank=rank, device=device, skip_all=skip_all, criterion=criterion, use_scheduler=use_scheduler)
 
             # Compute energies and their correlations with gene expressions
             self.get_energies()
@@ -131,7 +134,7 @@ class Landscape:
         # Unpack fitting results into separate attributes
         self.threshold, self.exponent, self.offset, self.sigmoid_mse = results.T
 
-    def fit_interactions(self, w_threshold=1e-5, infer_I=False, n_epochs=1000, criterion='L2', low_rank=True, rank=10, device='cpu', skip_all=False):
+    def fit_interactions(self, w_threshold=1e-5, w_scaffold=None, infer_I=False, n_epochs=1000, criterion='L2', low_rank=True, rank=10, device='cpu', skip_all=False, use_scheduler=False):
         # Get spliced matrix and velocity matrix
         x = self.get_matrix(self.spliced_matrix_key, genes=self.genes).A
         v = self.get_matrix(self.velocity_key, genes=self.genes).A
@@ -147,13 +150,30 @@ class Landscape:
         if not skip_all:
             print('Inferring interaction matrix W and bias vector I for all cells')
             # If the criterion is not 'L2', use a specific method for fitting
-            if criterion != 'L2':
+            if (criterion != 'L2') and (w_scaffold is None):
+                device = torch.device("cuda" if (torch.cuda.is_available() and device=="cuda") else "cpu")
                 model = OptimizerLandscape(g, rank, low_rank, device)
                 train_dataset = CustomDataset(sig, v, x, device)
                 train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=64, shuffle=True)
                 model.train_model(train_loader, n_epochs, learning_rate=0.001, reg_lambda=0.01, l1_regularization=False, criterion=criterion)
                 W = (model.U @ model.V).detach().cpu().numpy()
                 I = model.I.detach().cpu().numpy()
+                W[np.abs(W) < w_threshold] = 0
+                I[np.abs(I) < w_threshold] = 0
+                self.W = {'all': W}
+                self.I = {'all': I}
+            elif w_scaffold is not None:
+                # Use scaffold for fitting
+                device = torch.device("cuda" if (torch.cuda.is_available() and device=="cuda") else "cpu")
+                model = ScaffoldOptimizer(g, w_scaffold, device)
+                train_dataset = CustomDataset(sig, v, x, device)
+                train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=64, shuffle=True)
+                scheduler_fn = torch.optim.lr_scheduler.StepLR if use_scheduler else None
+                model.train_model(train_loader, n_epochs, learning_rate=0.001, reg_lambda=0.01, l1_regularization=False, criterion=criterion, scheduler_fn=scheduler_fn)
+                WW = model.W.detach().cpu().numpy()
+                I = model.I.detach().cpu().numpy()
+                W = np.zeros_like(w_scaffold)
+                W[w_scaffold.nonzero()] = WW
                 W[np.abs(W) < w_threshold] = 0
                 I[np.abs(I) < w_threshold] = 0
                 self.W = {'all': W}
@@ -178,13 +198,29 @@ class Landscape:
                 sig_cluster = sig[idx, :]
 
                 # If the criterion is not 'L2', use a specific method for fitting
-                if criterion != 'L2':
+                if (criterion != 'L2') and (w_scaffold is None):
+                    device = torch.device("cuda" if (torch.cuda.is_available() and device=="cuda") else "cpu")
                     model = OptimizerLandscape(g, rank, low_rank, device)
                     train_dataset = CustomDataset(sig_cluster, v_cluster, x_cluster, device)
                     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=64, shuffle=True)
                     model.train_model(train_loader, n_epochs, learning_rate=0.001, reg_lambda=0.01, l1_regularization=False, criterion=criterion)
                     W = (model.U @ model.V).detach().cpu().numpy()
                     I = model.I.detach().cpu().numpy()
+                    W[np.abs(W) < w_threshold] = 0
+                    I[np.abs(I) < w_threshold] = 0
+                    self.W[ct] = W
+                    self.I[ct] = I
+                elif w_scaffold is not None:
+                    # Use scaffold for fitting
+                    device = torch.device("cuda" if (torch.cuda.is_available() and device=="cuda") else "cpu")
+                    model = ScaffoldOptimizer(g, w_scaffold, device)
+                    train_dataset = CustomDataset(sig_cluster, v_cluster, x_cluster, device)
+                    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=64, shuffle=True)
+                    model.train_model(train_loader, n_epochs, learning_rate=0.001, reg_lambda=0.01, l1_regularization=False, criterion=criterion)
+                    WW = model.W.detach().cpu().numpy()
+                    I = model.I.detach().cpu().numpy()
+                    W = np.zeros_like(w_scaffold)
+                    W[w_scaffold.nonzero()] = WW
                     W[np.abs(W) < w_threshold] = 0
                     I[np.abs(I) < w_threshold] = 0
                     self.W[ct] = W
@@ -714,7 +750,7 @@ class Landscape:
         ax.legend(loc='lower right')
         return ax
 
-    def plot_energy_boxplots(self, order=None, plot_energy = 'all', **fig_kws):
+    def plot_energy_boxplots(self, order=None, plot_energy = 'all', colors=None, **fig_kws):
         """
         Plot the energy distributions for different clusters using boxplots.
 
@@ -736,7 +772,16 @@ class Landscape:
             axs = np.array([axs])
             es = [getattr(self, f'E_{plot_energy.lower()}')]
 
-        order = self.adata.obs[self.cluster_key].unique() if order is None else order
+        if order is None:
+            order = self.adata.obs[self.cluster_key].unique()
+            if colors is not None:
+                assert isinstance(colors, list) and len(colors) >= len(order), "Colors should be a list of length at least equal to the number of clusters."
+                plt.rcParams['axes.prop_cycle'] = plt.cycler(color=colors)
+        else:
+            if colors is not None:
+                assert (isinstance(colors, list) or isinstance(colors,dict)) and len(colors) >= len(order), "Colors should be a list of length at least equal to the number of clusters."
+            colors = colors if isinstance(colors, dict) else {k: colors[i] for i, k in enumerate(order)}
+            plt.rcParams['axes.prop_cycle'] = plt.cycler(color=[colors[i] for i in order])
         
         for energy, ax in zip(es, axs):
             df = pd.DataFrame.from_dict(energy, orient='index').transpose().melt(var_name='Cluster', value_name='Energy').dropna()
@@ -818,6 +863,21 @@ class Landscape:
         correlations = np.nan_to_num(np.corrcoef(np.vstack((energies,X)))[:4,4:])
         self.correlation['all'], self.correlation_interaction['all'], self.correlation_degradation['all'], self.correlation_bias['all'] = correlations
         # No need to repeat the calculation for 'all', it's already covered in the loop
+    
+    def get_correlation_table(self, n_top_genes=20, which_correlation='total', order=None):
+        corr = 'correlation_'+which_correlation.lower() if which_correlation.lower()!='total' else 'correlation'
+        assert hasattr(self, corr), f'No {corr} attribute found in Landscape object'
+        corrs_dict = getattr(self,corr)
+        df = pd.DataFrame(index=range(n_top_genes), columns=pd.MultiIndex.from_product([order, ['Gene', 'Correlation']]))
+        order = self.adata.obs[self.cluster_key].unique() if order is None else order
+        for k in order:
+            corrs = corrs_dict[k]
+            indices = np.argsort(corrs)[::-1][:n_top_genes]
+            genes = self.gene_names[indices]
+            corrs = corrs[indices]
+            df[(k, 'Gene')] = genes
+            df[(k, 'Correlation')] = corrs
+        return df
 
     def plot_high_correlation_genes(self, top_n=10, energy='total', cluster='all', absolute=False, basis='umap', plot_correlations=False, **fig_kws):
         # Determine the correct correlation dictionary based on the energy type
