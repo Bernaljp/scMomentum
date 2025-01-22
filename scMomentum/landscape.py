@@ -15,7 +15,7 @@ from tqdm import tqdm
 from typing import Union, List
 import umap  # Ensure UMAP is imported, consider handling ImportError for environments without UMAP
 from .utilities import *  # Make sure to import the utilities module for using utility functions
-from .optimizer_landscape import OptimizerLandscape, ScaffoldOptimizer, CustomDataset
+from .optimizer_landscape import ScaffoldOptimizer, CustomDataset
 from .ode_solver import ODESolver
 
 class Landscape:
@@ -28,11 +28,11 @@ class Landscape:
                  cluster_key: Union[None, str] = None,
                  w_threshold: float = 1e-5,
                  w_scaffold: Union[None, np.ndarray] = None,
+                 only_TFs: bool = False,
                  infer_I: bool = False,
+                 refit_gamma: bool = False,
                  criterion: str = 'L2',
                  n_epochs: int = 1000,
-                 low_rank: bool = True,
-                 rank: int = 10,
                  device: str = 'cpu',
                  use_scheduler: bool = False,
                  skip_all: bool = False,
@@ -47,13 +47,23 @@ class Landscape:
         self.cluster_key = cluster_key
         self.clusters = self.adata.obs[self.cluster_key].unique() if self.cluster_key else []
         self.scaffold = w_scaffold
+        self.refit_gamma = refit_gamma
 
         if not manual_fit:
             # Fit sigmoids and heavysides for all genes
             self.fit_all_sigmoids()  # Adjust 'th' as necessary
             self.write_sigmoids()
             # Fit interactions
-            self.fit_interactions(w_threshold=w_threshold, w_scaffold=w_scaffold, infer_I=infer_I, n_epochs=n_epochs, low_rank=low_rank, rank=rank, device=device, skip_all=skip_all, criterion=criterion, use_scheduler=use_scheduler)
+            self.fit_interactions(w_threshold=w_threshold,
+                                  w_scaffold=w_scaffold,
+                                  only_TFs=only_TFs, 
+                                  infer_I=infer_I,
+                                  refit_gamma=refit_gamma,
+                                  n_epochs=n_epochs,
+                                  device=device,
+                                  skip_all=skip_all,
+                                  criterion=criterion,
+                                  use_scheduler=use_scheduler)
 
             # Compute energies and their correlations with gene expressions
             self.get_energies()
@@ -134,104 +144,108 @@ class Landscape:
         # Unpack fitting results into separate attributes
         self.threshold, self.exponent, self.offset, self.sigmoid_mse = results.T
 
-    def fit_interactions(self, w_threshold=1e-5, w_scaffold=None, infer_I=False, n_epochs=1000, criterion='L2', low_rank=True, rank=10, device='cpu', skip_all=False, use_scheduler=False):
-        # Get spliced matrix and velocity matrix
+    def fit_interactions(
+        self,
+        w_threshold=1e-5,
+        w_scaffold=None,
+        only_TFs=False,
+        infer_I=False,
+        refit_gamma=False,
+        n_epochs=1000,
+        criterion="L2",
+        device="cpu",
+        skip_all=False,
+        use_scheduler=False,
+    ):
+        # Get spliced and velocity matrices
         x = self.get_matrix(self.spliced_matrix_key, genes=self.genes).A
         v = self.get_matrix(self.velocity_key, genes=self.genes).A
-        
-        # Compute diagonal matrix g
         g = self.adata.var[self.gamma_key][self.genes].values.astype(x.dtype)
+        sig = self.get_matrix("sigmoid", genes=self.genes)
         
-        # Compute sigmoid function of x
-        sig = self.get_matrix('sigmoid', genes=self.genes)
         self.W = {}
         self.I = {}
-        # If not skipping all calculations
+        if refit_gamma:
+            self.gamma = {}
+        
+        clusters = self.adata.obs[self.cluster_key].unique() ##Maybe fix the case where cluster key fails
         if not skip_all:
-            print('Inferring interaction matrix W and bias vector I for all cells')
-            # If the criterion is not 'L2', use a specific method for fitting
-            if (criterion != 'L2') and (w_scaffold is None):
-                device = torch.device("cuda" if (torch.cuda.is_available() and device=="cuda") else "cpu")
-                model = OptimizerLandscape(g, rank, low_rank, device)
-                train_dataset = CustomDataset(sig, v, x, device)
-                train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=64, shuffle=True)
-                model.train_model(train_loader, n_epochs, learning_rate=0.001, reg_lambda=0.01, l1_regularization=False, criterion=criterion)
-                W = (model.U @ model.V).detach().cpu().numpy()
-                I = model.I.detach().cpu().numpy()
-                W[np.abs(W) < w_threshold] = 0
-                I[np.abs(I) < w_threshold] = 0
-                self.W = {'all': W}
-                self.I = {'all': I}
-            elif w_scaffold is not None:
-                # Use scaffold for fitting
-                device = torch.device("cuda" if (torch.cuda.is_available() and device=="cuda") else "cpu")
-                model = ScaffoldOptimizer(g, w_scaffold, device)
-                train_dataset = CustomDataset(sig, v, x, device)
-                train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=64, shuffle=True)
-                scheduler_fn = torch.optim.lr_scheduler.StepLR if use_scheduler else None
-                model.train_model(train_loader, n_epochs, learning_rate=0.001, reg_lambda=0.01, l1_regularization=False, criterion=criterion, scheduler_fn=scheduler_fn)
-                WW = model.W.detach().cpu().numpy()
-                I = model.I.detach().cpu().numpy()
-                W = np.zeros_like(w_scaffold)
-                W[w_scaffold.nonzero()] = WW
-                W[np.abs(W) < w_threshold] = 0
-                I[np.abs(I) < w_threshold] = 0
-                self.W = {'all': W}
-                self.I = {'all': I}
-            else:
-                # Default method for fitting when criterion is 'L2'
-                rhs = np.hstack((sig, np.ones((sig.shape[0], 1), dtype=x.dtype))) if infer_I else sig
-                WI = np.linalg.pinv(rhs) @ (v + g[None, :] * x)
-                WI[np.abs(WI) < w_threshold] = 0
-                self.W['all'] = WI[:-1, :] if infer_I else WI
-                self.I['all'] = WI[-1, :] if infer_I else -np.clip(WI, a_min=None, a_max=0).sum(axis=0)
+            clusters = np.append(clusters, 'all') 
 
-        # Cluster-specific fitting
-        if self.cluster_key is not None:
-            for ct in self.adata.obs[self.cluster_key].unique():
-                print(f'Inferring interaction matrix W and bias vector I for cluster {ct}')
-                idx = (self.adata.obs[self.cluster_key].values == ct)
-                
-                # Prepare data for this cluster
-                x_cluster = x[idx, :]
-                v_cluster = v[idx, :]
-                sig_cluster = sig[idx, :]
+        for ct in clusters:
+            print(f"Inferring interaction matrix W and bias vector I for cluster {ct}")
+            idx = self.adata.obs[self.cluster_key].values == ct
+            self._fit_interactions_for_group(
+                group=ct,
+                x=x[idx, :],
+                v=v[idx, :],
+                sig=sig[idx, :],
+                g=g,
+                w_threshold=w_threshold,
+                w_scaffold=w_scaffold,
+                only_TFs=only_TFs,
+                infer_I=infer_I,
+                refit_gamma=refit_gamma,
+                n_epochs=n_epochs,
+                criterion=criterion,
+                device=device,
+                use_scheduler=use_scheduler,
+            )
 
-                # If the criterion is not 'L2', use a specific method for fitting
-                if (criterion != 'L2') and (w_scaffold is None):
-                    device = torch.device("cuda" if (torch.cuda.is_available() and device=="cuda") else "cpu")
-                    model = OptimizerLandscape(g, rank, low_rank, device)
-                    train_dataset = CustomDataset(sig_cluster, v_cluster, x_cluster, device)
-                    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=64, shuffle=True)
-                    model.train_model(train_loader, n_epochs, learning_rate=0.001, reg_lambda=0.01, l1_regularization=False, criterion=criterion)
-                    W = (model.U @ model.V).detach().cpu().numpy()
-                    I = model.I.detach().cpu().numpy()
-                    W[np.abs(W) < w_threshold] = 0
-                    I[np.abs(I) < w_threshold] = 0
-                    self.W[ct] = W
-                    self.I[ct] = I
-                elif w_scaffold is not None:
-                    # Use scaffold for fitting
-                    device = torch.device("cuda" if (torch.cuda.is_available() and device=="cuda") else "cpu")
-                    model = ScaffoldOptimizer(g, w_scaffold, device)
-                    train_dataset = CustomDataset(sig_cluster, v_cluster, x_cluster, device)
-                    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=64, shuffle=True)
-                    model.train_model(train_loader, n_epochs, learning_rate=0.001, reg_lambda=0.01, l1_regularization=False, criterion=criterion)
-                    WW = model.W.detach().cpu().numpy()
-                    I = model.I.detach().cpu().numpy()
-                    W = np.zeros_like(w_scaffold)
-                    W[w_scaffold.nonzero()] = WW
-                    W[np.abs(W) < w_threshold] = 0
-                    I[np.abs(I) < w_threshold] = 0
-                    self.W[ct] = W
-                    self.I[ct] = I
-                else:
-                    # Default L2 criterion fitting for the cluster
-                    rhs_cluster = np.hstack((sig_cluster, np.ones((sig_cluster.shape[0], 1), dtype=x_cluster.dtype))) if infer_I else sig_cluster
-                    WI_cluster = np.linalg.lstsq(rhs_cluster, v_cluster + g[None, :] * x_cluster, rcond=1e-5)[0]
-                    WI_cluster[np.abs(WI_cluster) < w_threshold] = 0
-                    self.W[ct] = WI_cluster[:-1, :] if infer_I else WI_cluster
-                    self.I[ct] = WI_cluster[-1, :] if infer_I else -np.clip(WI_cluster, a_min=None, a_max=0).sum(axis=0)
+
+    def _fit_interactions_for_group(
+        self,
+        group,
+        x,
+        v,
+        sig,
+        g,
+        w_threshold,
+        w_scaffold,
+        only_TFs,
+        infer_I,
+        refit_gamma,
+        n_epochs,
+        criterion,
+        device,
+        use_scheduler,
+    ):
+        """
+        Helper function to fit interaction matrix W and bias vector I for a group (global or cluster).
+        """
+        device = torch.device("cuda" if (torch.cuda.is_available() and device == "cuda") else "cpu")
+        
+        if w_scaffold is not None:
+            # Use ScaffoldOptimizer
+            model = ScaffoldOptimizer(g, w_scaffold, device, refit_gamma, use_masked_linear=only_TFs)
+            train_loader = self._create_train_loader(sig, v, x, device)
+            scheduler_fn = torch.optim.lr_scheduler.StepLR if use_scheduler else None
+            model.train_model(train_loader, n_epochs, learning_rate=0.1, criterion=criterion, scheduler_fn=scheduler_fn, scheduler_kwargs={"step_size": 100, "gamma": 0.4})
+            W = model.W.weight.detach().cpu().numpy()
+            I = np.exp(model.I.detach().cpu().numpy())
+            g = np.exp(model.gamma.detach().cpu().numpy())
+        else:
+            # Default L2 criterion using least squares
+            rhs = np.hstack((sig, np.ones((sig.shape[0], 1), dtype=x.dtype))) if infer_I else sig
+            WI = np.linalg.lstsq(rhs, v + g[None, :] * x, rcond=1e-5)[0]
+            W = WI[:-1, :].T if infer_I else WI
+            I = WI[-1, :] if infer_I else -np.clip(WI, a_min=None, a_max=0).sum(axis=0)
+
+        # Threshold values and store results
+        W[np.abs(W) < w_threshold] = 0
+        I[np.abs(I) < w_threshold] = 0
+        self.W[group] = W
+        self.I[group] = I
+        if refit_gamma:
+            self.gamma[group] = g
+
+
+    def _create_train_loader(self, sig, v, x, device):
+        """
+        Helper function to create a PyTorch DataLoader for training.
+        """
+        dataset = CustomDataset(sig, v, x, device)
+        return torch.utils.data.DataLoader(dataset, batch_size=64, shuffle=True)
     
     def write_sigmoids(self):
         sig = self.get_sigmoid()
@@ -322,7 +336,7 @@ class Landscape:
         W = self.W[cl]
         
         # Calculate the interaction energy
-        interaction_energy = -0.5 * np.sum((sig @ W) * sig, axis=1)
+        interaction_energy = -0.5 * np.sum((sig @ W.T) * sig, axis=1)
         return interaction_energy
 
     def degradation_energy(self, cl, x=None):
@@ -338,7 +352,7 @@ class Landscape:
             np.ndarray: Calculated degradation energy.
         """
         idx = self.adata.obs[self.cluster_key] == cl if cl != 'all' else slice(None)
-        g = self.adata.var[self.gamma_key][self.genes].values
+        g = self.adata.var[self.gamma_key][self.genes].values if not self.refit_gamma else self.gamma[cl]
 
         sig = self.get_sigmoid(x) if x is not None else self.get_matrix('sigmoid', genes=self.genes)[idx]
         integral = int_sig_act_inv(sig, self.threshold, self.exponent)
@@ -379,7 +393,7 @@ class Landscape:
             np.ndarray: Decomposed degradation energy for each gene.
         """
         idx = self.adata.obs[self.cluster_key] == cl if cl != 'all' else slice(None)
-        g = self.adata.var[self.gamma_key][self.genes].values
+        g = self.adata.var[self.gamma_key][self.genes].values if not self.refit_gamma else self.gamma[cl]
 
         sig = self.get_sigmoid(x) if x is not None else self.get_matrix('sigmoid', genes=self.genes)[idx]
         integral = int_sig_act_inv(sig, self.threshold, self.exponent)
@@ -416,7 +430,7 @@ class Landscape:
         idx = self.adata.obs[self.cluster_key] == cl if cl != 'all' else slice(None)
         sig = self.get_sigmoid(x) if x is not None else self.get_matrix('sigmoid', genes=self.genes)[idx]
         W = self.W[cl]
-        return -0.5*(sig @ W) * sig if side == 'in' else -0.5*(sig @ W.T) * sig
+        return -0.5*(sig @ W.T) * sig if side == 'out' else -0.5*(sig @ W) * sig
     
     def hopfield_model(self, cl, x=None):
         """
@@ -434,11 +448,11 @@ class Landscape:
         W = self.W[cl]
         # Use the entire spliced matrix if x is not provided
         if x is None:
-            x = self.get_matrix(self.spliced_matrix_key, genes=self.genes).A
+            x = self.get_matrix(self.spliced_matrix_key, genes=self.genes)[idx].A
 
-        g = self.adata.var[self.gamma_key][self.genes].values.astype(x.dtype)
+        g = self.adata.var[self.gamma_key][self.genes].values.astype(x.dtype) if not self.refit_gamma else self.gamma[cl]
         
-        xdot = sig @ W - g[None, :] * x + self.I[cl]
+        xdot = sig @ W.T - g[None, :] * x + self.I[cl]
 
         return xdot
 
@@ -482,8 +496,8 @@ class Landscape:
 
             # Compute the Jacobian matrix using the interaction weights and the degradation rates
             W = self.W[celltype[i]]
-            gamma = self.adata.var[self.gamma_key][self.genes].values.astype(sig.dtype)
-            jacobian_matrix = W.T * dsig_dx[:, None] - np.diag(gamma)
+            gamma = self.adata.var[self.gamma_key][self.genes].values.astype(sig.dtype) if not self.refit_gamma else self.gamma[celltype[i]]
+            jacobian_matrix = W * dsig_dx[:, None] - np.diag(gamma)
 
             jacobians.append(jacobian_matrix)
 
@@ -1258,13 +1272,15 @@ class Landscape:
                 self.jacobian_eigenvectors = np.zeros((n_cells, n_genes, n_genes), dtype=np.complex128)
         
         device = 'cuda' if ((device=='cuda') & torch.cuda.is_available()) else 'cpu'
-        gamma = torch.diag(torch.tensor(self.adata.var[self.gamma_key][self.genes].values.astype(list(self.W.values())[0].dtype), device=device))
+        
         """Compute Jacobians and optionally eigenvectors for all clusters."""
         for cluster_label in self.W:
             # Skip the iteration if the cluster label is 'all'
             if cluster_label == 'all':
                 continue
 
+            g = self.adata.var[self.gamma_key][self.genes].values if not self.refit_gamma else self.gamma[cluster_label]
+            gamma = torch.diag(torch.tensor(g.astype(list(self.W.values())[0].dtype), device=device))
             # Access the weight matrix for the current cluster and move it to the GPU
             W = torch.tensor(self.W[cluster_label], device=device)
 
@@ -1281,7 +1297,7 @@ class Landscape:
             # Update velocity fields and Jacobian matrices for each cell in the current cluster
             for idx, sig_prime_val in tqdm(zip(cluster_indices, sigmoid_prime), total=len(cluster_indices)):
                 # Perform calculations on the GPU
-                jac_f = W.T * sig_prime_val.view(-1,1) - gamma
+                jac_f = W * sig_prime_val.view(-1,1) - gamma
 
                 eigenvalues, eigenvectors = torch.linalg.eig(jac_f) if compute_eigenvectors else (torch.linalg.eigvals(jac_f), None)
 
@@ -1447,7 +1463,7 @@ class Landscape:
                 plot_data['rate']['interaction'] = {k: self.W[k].sum(axis=0)[genes_in] for k in order} if interaction_direction.lower()=='in' else {k: self.W[k].sum(axis=1)[genes_in] for k in order}
                 plot_labels['rate']['interaction'] = 'Total outgoing interaction rate' if interaction_direction.lower()=='out' else 'Total incoming interaction rate'
             if (energy_type.lower() == 'degradation') or (energy_type_2.lower() == 'degradation'):
-                plot_data['rate']['degradation'] = {k: self.adata.var[self.gamma_key][self.genes].values[genes_in] for k in order}
+                plot_data['rate']['degradation'] = {k: self.adata.var[self.gamma_key][self.genes].values[genes_in] if self.refit_gamma else self.gamma[k][genes_in] for k in order}
                 plot_labels['rate']['degradation'] = 'Degradation rate'
             if (energy_type.lower() == 'bias') or (energy_type_2.lower() == 'bias'):
                 plot_data['rate']['bias'] = {k: self.I[k][genes_in] for k in order}
@@ -1527,13 +1543,13 @@ class Landscape:
         """
         # Retrieve interaction matrix, degradation rates, bias, thresholds, and exponents for the cluster
         W = self.W[cluster]
-        g = self.adata.var[self.gamma_key][self.genes].values.astype(W.dtype)
+        g = self.adata.var[self.gamma_key][self.genes].values.astype(W.dtype) if self.refit_gamma else self.gamma[cluster].astype(W.dtype)
         I = self.I[cluster]
         k = self.threshold
         n = self.exponent
 
         # Initialize the ODE solver with the system parameters
-        syst = ODESolver(W.T, g, I, k, n, solver, clipping=clip)
+        syst = ODESolver(W, g, I, k, n, solver, clipping=clip)
 
         # Select a random cell from the cluster or use the provided initial state
         c_idx = self.adata.obs[self.cluster_key] == cluster
