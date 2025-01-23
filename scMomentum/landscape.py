@@ -1315,21 +1315,24 @@ class Landscape:
                     self.jacobian.flush()
 
 
-    def plot_jacobian_summary(self, fig_size=(10, 5), part='real', show=False):
+    def plot_jacobian_summary(self, fig_size=(15, 5), part='real', show=False):
 
-        self.adata.obs['eval_positive_tmp'] = np.sum(np.real(self.jacobian_eigenvalues) > 0.1, axis=1)
+        self.adata.obs['eval_positive_tmp'] = np.sum(np.real(self.jacobian_eigenvalues) > 0, axis=1)
+        self.adata.obs['eval_negative_tmp'] = np.sum(np.real(self.jacobian_eigenvalues) < 0, axis=1)
         self.adata.obs['eval_mean_tmp'] = np.mean(np.real(self.jacobian_eigenvalues), axis=1) if part == 'real' else np.mean(np.imag(self.jacobian_eigenvalues[:,::2]), axis=1)
 
-        fig,axs = plt.subplots(1,2,figsize=fig_size)
+        fig,axs = plt.subplots(1,3,figsize=fig_size)
         dyn.pl.streamline_plot(self.adata, basis='umap', color='eval_positive_tmp', ax=axs[0], save_show_or_return='return')
-        dyn.pl.streamline_plot(self.adata, basis='umap', color='eval_mean_tmp', ax=axs[1], save_show_or_return='return')
+        dyn.pl.streamline_plot(self.adata, basis='umap', color='eval_negative_tmp', ax=axs[1], save_show_or_return='return')
+        dyn.pl.streamline_plot(self.adata, basis='umap', color='eval_mean_tmp', ax=axs[2], save_show_or_return='return')
 
         axs[0].set_title(f'Number of positive eigenvalues\n Jacobian')
-        axs[1].set_title(f'Mean of {part} part of eigenvalues\n Jacobian')
+        axs[1].set_title(f'Number of negative eigenvalues\n Jacobian')
+        axs[2].set_title(f'Mean of {part} part of eigenvalues\n Jacobian')
 
         if show:
             plt.show()
-        del self.adata.obs['eval_positive_tmp'], self.adata.obs['eval_mean_tmp']
+        del self.adata.obs['eval_positive_tmp'], self.adata.obs['eval_mean_tmp'], self.adata.obs['eval_negative_tmp']
 
     def plot_jacobian_eigenvalue(self, n, part='real', ax=None, **kwargs):
         figsize = kwargs.get('figsize',(15,10))
