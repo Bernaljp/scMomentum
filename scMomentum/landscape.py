@@ -1,7 +1,6 @@
 import anndata
 from collections import defaultdict
 import dynamo as dyn
-from functools import partial
 import hoggorm as ho
 import itertools
 import matplotlib.pyplot as plt
