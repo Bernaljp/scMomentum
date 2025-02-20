@@ -27,13 +27,18 @@ class Landscape:
                  cluster_key: Union[None, str] = None,
                  w_threshold: float = 1e-5,
                  w_scaffold: Union[None, np.ndarray] = None,
+                 scaffold_regularization: float = 1.0,
                  only_TFs: bool = False,
                  infer_I: bool = False,
                  refit_gamma: bool = False,
+                 pre_initialize_W: bool = False,
                  criterion: str = 'L2',
+                 batch_size: int = 64,
                  n_epochs: int = 1000,
                  device: str = 'cpu',
                  use_scheduler: bool = False,
+                 scheduler_kws: dict = {},
+                 get_plots: bool = False,
                  skip_all: bool = False,
                  manual_fit: bool = False,):
         
@@ -55,14 +60,20 @@ class Landscape:
             # Fit interactions
             self.fit_interactions(w_threshold=w_threshold,
                                   w_scaffold=w_scaffold,
+                                  scaffold_regularization=scaffold_regularization,
                                   only_TFs=only_TFs, 
                                   infer_I=infer_I,
                                   refit_gamma=refit_gamma,
+                                  pre_initialize_W=pre_initialize_W,
                                   n_epochs=n_epochs,
                                   device=device,
                                   skip_all=skip_all,
                                   criterion=criterion,
-                                  use_scheduler=use_scheduler)
+                                  batch_size=batch_size,
+                                  use_scheduler=use_scheduler,
+                                  scheduler_kws=scheduler_kws,
+                                  get_plots=get_plots,
+                                  )
 
             # Compute energies and their correlations with gene expressions
             self.get_energies()
@@ -147,14 +158,19 @@ class Landscape:
         self,
         w_threshold=1e-5,
         w_scaffold=None,
+        scaffold_regularization=1.0,
         only_TFs=False,
         infer_I=False,
         refit_gamma=False,
+        pre_initialize_W=False,
         n_epochs=1000,
         criterion="L2",
+        batch_size=64,
         device="cpu",
         skip_all=False,
         use_scheduler=False,
+        scheduler_kws={},
+        get_plots=False,
     ):
         # Get spliced and velocity matrices
         x = self.get_matrix(self.spliced_matrix_key, genes=self.genes).A
@@ -170,7 +186,8 @@ class Landscape:
         clusters = self.adata.obs[self.cluster_key].unique() ##Maybe fix the case where cluster key fails
         if not skip_all:
             clusters = np.append(clusters, 'all') 
-
+        if w_scaffold is not None:
+            self.models = {}
         for ct in clusters:
             print(f"Inferring interaction matrix W and bias vector I for cluster {ct}")
             idx = self.adata.obs[self.cluster_key].values == ct
@@ -182,13 +199,18 @@ class Landscape:
                 g=g,
                 w_threshold=w_threshold,
                 w_scaffold=w_scaffold,
+                scaffold_regularization=scaffold_regularization,
                 only_TFs=only_TFs,
                 infer_I=infer_I,
                 refit_gamma=refit_gamma,
+                pre_initialize_W=pre_initialize_W,
                 n_epochs=n_epochs,
                 criterion=criterion,
+                batch_size=batch_size,
                 device=device,
                 use_scheduler=use_scheduler,
+                scheduler_kws=scheduler_kws,
+                get_plots=get_plots,
             )
 
 
@@ -201,34 +223,49 @@ class Landscape:
         g,
         w_threshold,
         w_scaffold,
+        scaffold_regularization,
         only_TFs,
         infer_I,
         refit_gamma,
+        pre_initialize_W,
         n_epochs,
         criterion,
+        batch_size,
         device,
         use_scheduler,
+        scheduler_kws,
+        get_plots,
     ):
         """
         Helper function to fit interaction matrix W and bias vector I for a group (global or cluster).
         """
         device = torch.device("cuda" if (torch.cuda.is_available() and device == "cuda") else "cpu")
+
+        W = None
+        I = None
+        if (w_scaffold is None) or pre_initialize_W: 
+            # Default L2 criterion using least squares
+            rhs = np.hstack((sig, np.ones((sig.shape[0], 1), dtype=x.dtype))) if infer_I else sig
+            try:
+                WI = np.linalg.lstsq(rhs, v + g[None, :] * x, rcond=1e-5)[0]
+                W = WI[:-1, :].T if infer_I else WI
+                I = WI[-1, :] if infer_I else -np.clip(WI, a_min=None, a_max=0).sum(axis=0)
+            except:
+                pass
         
         if w_scaffold is not None:
             # Use ScaffoldOptimizer
-            model = ScaffoldOptimizer(g, w_scaffold, device, refit_gamma, use_masked_linear=only_TFs)
-            train_loader = self._create_train_loader(sig, v, x, device)
+            model = ScaffoldOptimizer(g, w_scaffold, device, refit_gamma, scaffold_regularization=scaffold_regularization, use_masked_linear=only_TFs, pre_initialized_W=W, pre_initialized_I=I)
+            train_loader = self._create_train_loader(sig, v, x, device, batch_size=batch_size)
             scheduler_fn = torch.optim.lr_scheduler.StepLR if use_scheduler else None
-            model.train_model(train_loader, n_epochs, learning_rate=0.1, criterion=criterion, scheduler_fn=scheduler_fn, scheduler_kwargs={"step_size": 100, "gamma": 0.4})
+            scheduler_kwargs = {"step_size": 100, "gamma": 0.4} if scheduler_kws == {} else scheduler_kws
+            model.train_model(train_loader, n_epochs, learning_rate=0.1, criterion=criterion, scheduler_fn=scheduler_fn, scheduler_kwargs=scheduler_kwargs, get_plots=get_plots)
             W = model.W.weight.detach().cpu().numpy()
-            I = np.exp(model.I.detach().cpu().numpy())
+            # I = np.exp(model.I.detach().cpu().numpy())
+            I = model.I.detach().cpu().numpy()
             g = np.exp(model.gamma.detach().cpu().numpy())
-        else:
-            # Default L2 criterion using least squares
-            rhs = np.hstack((sig, np.ones((sig.shape[0], 1), dtype=x.dtype))) if infer_I else sig
-            WI = np.linalg.lstsq(rhs, v + g[None, :] * x, rcond=1e-5)[0]
-            W = WI[:-1, :].T if infer_I else WI
-            I = WI[-1, :] if infer_I else -np.clip(WI, a_min=None, a_max=0).sum(axis=0)
+            self.models[group] = model
+            
 
         # Threshold values and store results
         W[np.abs(W) < w_threshold] = 0
@@ -237,14 +274,15 @@ class Landscape:
         self.I[group] = I
         if refit_gamma:
             self.gamma[group] = g
+        
 
 
-    def _create_train_loader(self, sig, v, x, device):
+    def _create_train_loader(self, sig, v, x, device, batch_size=64):
         """
         Helper function to create a PyTorch DataLoader for training.
         """
         dataset = CustomDataset(sig, v, x, device)
-        return torch.utils.data.DataLoader(dataset, batch_size=64, shuffle=True)
+        return torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
     
     def write_sigmoids(self):
         sig = self.get_sigmoid()
@@ -881,8 +919,8 @@ class Landscape:
         corr = 'correlation_'+which_correlation.lower() if which_correlation.lower()!='total' else 'correlation'
         assert hasattr(self, corr), f'No {corr} attribute found in Landscape object'
         corrs_dict = getattr(self,corr)
-        df = pd.DataFrame(index=range(n_top_genes), columns=pd.MultiIndex.from_product([order, ['Gene', 'Correlation']]))
         order = self.adata.obs[self.cluster_key].unique() if order is None else order
+        df = pd.DataFrame(index=range(n_top_genes), columns=pd.MultiIndex.from_product([order, ['Gene', 'Correlation']]))
         for k in order:
             corrs = corrs_dict[k]
             indices = np.argsort(corrs)[::-1][:n_top_genes]
