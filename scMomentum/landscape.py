@@ -146,7 +146,7 @@ class Landscape:
             min_th (float): Threshold for zero expression in percentage of maximum expression of the each gene.
         """
         # Retrieve expression data for all genes
-        x = self.get_matrix(self.spliced_matrix_key, genes=self.genes).T.A
+        x = to_numpy(self.get_matrix(self.spliced_matrix_key, genes=self.genes).T)
 
         # Apply the fitting function to each gene's expression data
         results = np.array([fit_sigmoid(g, min_th=min_th) for g in x])
@@ -173,8 +173,8 @@ class Landscape:
         get_plots=False,
     ):
         # Get spliced and velocity matrices
-        x = self.get_matrix(self.spliced_matrix_key, genes=self.genes).A
-        v = self.get_matrix(self.velocity_key, genes=self.genes).A
+        x = to_numpy(self.get_matrix(self.spliced_matrix_key, genes=self.genes))
+        v = to_numpy(self.get_matrix(self.velocity_key, genes=self.genes))
         g = self.adata.var[self.gamma_key][self.genes].values.astype(x.dtype)
         sig = self.get_matrix("sigmoid", genes=self.genes)
         
@@ -485,7 +485,7 @@ class Landscape:
         W = self.W[cl]
         # Use the entire spliced matrix if x is not provided
         if x is None:
-            x = self.get_matrix(self.spliced_matrix_key, genes=self.genes)[idx].A
+            x = to_numpy(self.get_matrix(self.spliced_matrix_key, genes=self.genes)[idx])
 
         g = self.adata.var[self.gamma_key][self.genes].values.astype(x.dtype) if not self.refit_gamma else self.gamma[cl]
         
@@ -553,7 +553,7 @@ class Landscape:
         """
         # Use the entire spliced matrix if x is not provided
         if x is None:
-            x = self.get_matrix(self.spliced_matrix_key, genes=self.genes).A
+            x = to_numpy(self.get_matrix(self.spliced_matrix_key, genes=self.genes))
 
         # Compute the sigmoid function of x using the class's threshold and exponent parameters
         sigmoid_output = np.nan_to_num(sigmoid(x, self.threshold[None, :], self.exponent[None, :]))
@@ -570,7 +570,7 @@ class Landscape:
             **kwargs: Additional keyword arguments to pass to the embedding method.
         """
         # Retrieve the spliced matrix data for the specified genes
-        X = self.get_matrix(self.spliced_matrix_key, genes=self.genes).A
+        X = to_numpy(self.get_matrix(self.spliced_matrix_key, genes=self.genes))
 
         # Extract embedding parameters from kwargs or use defaults
         n_neighbors = kwargs.get('n_neighbors', 30)
@@ -693,7 +693,7 @@ class Landscape:
         self.highD_grid = emb['highD_grid']
 
         # Transform cells to the embedding space to update the AnnData object
-        X = self.get_matrix(self.spliced_matrix_key, genes=self.genes).A
+        X = to_numpy(self.get_matrix(self.spliced_matrix_key, genes=self.genes))
         cells2d = self.embedding.transform(X)
         self.adata.obsm[f'X_{which}'] = cells2d
 
@@ -768,7 +768,7 @@ class Landscape:
         # Retrieve gene index and sort the expression data
         gene_index = self.gene_names.get_loc(gene)
         adata_index = self.genes[gene_index]
-        gexp = self.get_matrix(self.spliced_matrix_key, genes=[adata_index]).A.flatten()
+        gexp = to_numpy(self.get_matrix(self.spliced_matrix_key, genes=[adata_index])).flatten()
         expression_data = np.sort(gexp)
         empirical_cdf = np.linspace(0, 1, len(expression_data))
 
@@ -903,14 +903,14 @@ class Landscape:
             energies[3, cells] = self.E_bias.get(k, np.zeros(sum(cells)))
 
             # Extract expression data for the current cluster or all cells
-            X = self.adata.layers[self.spliced_matrix_key][cells][:, self.genes].T.A
+            X = to_numpy(self.adata.layers[self.spliced_matrix_key][cells][:, self.genes].T)
 
             # Compute correlations between energies and gene expression
             correlations = np.nan_to_num(np.corrcoef(np.vstack((energies[:, cells], X)))[:4, 4:])
             # Store computed correlations in their respective dictionaries
             self.correlation[k], self.correlation_interaction[k], self.correlation_degradation[k], self.correlation_bias[k] = correlations
         
-        X = self.adata.layers[self.spliced_matrix_key][:,self.genes].T.A
+        X = to_numpy(self.adata.layers[self.spliced_matrix_key][:,self.genes].T)
         correlations = np.nan_to_num(np.corrcoef(np.vstack((energies,X)))[:4,4:])
         self.correlation['all'], self.correlation_interaction['all'], self.correlation_degradation['all'], self.correlation_bias['all'] = correlations
         # No need to repeat the calculation for 'all', it's already covered in the loop
@@ -1134,8 +1134,8 @@ class Landscape:
 
         # Compute pairwise correlations between cell types
         for k1, k2 in itertools.combinations(keys, 2):
-            expr_k1 = counts[self.adata.obs[self.cluster_key] == k1].A
-            expr_k2 = counts[self.adata.obs[self.cluster_key] == k2].A
+            expr_k1 = to_numpy(counts[self.adata.obs[self.cluster_key] == k1])
+            expr_k2 = to_numpy(counts[self.adata.obs[self.cluster_key] == k2])
             rv.loc[k1, k2] = corr_f([expr_k1.T, expr_k2.T])[0, 1]
             rv.loc[k2, k1] = rv.loc[k1, k2]
 
@@ -1218,8 +1218,8 @@ class Landscape:
 
         # Compute pairwise correlations between predicted future states of cell types
         for k1, k2 in itertools.combinations(keys, 2):
-            future_expr_k1 = sigmoid(counts[self.adata.obs[self.cluster_key] == k1].A, self.threshold[None, :], self.exponent[None, :])
-            future_expr_k2 = sigmoid(counts[self.adata.obs[self.cluster_key] == k2].A, self.threshold[None, :], self.exponent[None, :])
+            future_expr_k1 = sigmoid(to_numpy(counts[self.adata.obs[self.cluster_key] == k1]), self.threshold[None, :], self.exponent[None, :])
+            future_expr_k2 = sigmoid(to_numpy(counts[self.adata.obs[self.cluster_key] == k2]), self.threshold[None, :], self.exponent[None, :])
 
             # Apply interaction matrices to predict future states
             future_state_k1 = self.W[k1] @ future_expr_k1.T
@@ -1325,7 +1325,7 @@ class Landscape:
             cluster_indices = np.where(self.adata.obs[self.cluster_key] == cluster_label)[0]
 
             # Extract the gene expression data for the cells in the current cluster
-            cell_data = torch.tensor(self.adata.layers[self.spliced_matrix_key][cluster_indices][:, self.genes].A, device=device)
+            cell_data = torch.tensor(to_numpy(self.adata.layers[self.spliced_matrix_key][cluster_indices][:, self.genes]), device=device)
 
             # Compute the sigmoid function and its first and second derivatives
             sigmoid_values = torch.tensor(self.get_sigmoid(cell_data.cpu().numpy()), device=device)
@@ -1376,7 +1376,7 @@ class Landscape:
         cmap = kwargs.get('cmap','viridis')
         _,ax = plt.subplots(1, 1, figsize=figsize) if ax is None else (None,ax)
         part = np.real if part=='real' else np.imag
-        self.adata.obs[f'Eigenvalue {n+1}'] = part(self.adata.layers[f'jacobian_eigenvalues'][:,self.adata.var['use_for_dynamics'].values][:,n].A.flatten())
+        self.adata.obs[f'Eigenvalue {n+1}'] = part(to_numpy(self.adata.layers[f'jacobian_eigenvalues'][:,self.adata.var['use_for_dynamics'].values][:,n]).flatten())
         _ = dyn.pl.streamline_plot(self.adata, color=f'Eigenvalue {n+1}', basis='umap', size=(15,10), show_legend='on data', cmap=cmap, show_arrowed_spines=True, ax=ax, save_show_or_return='return')
         # plt.show()
         del self.adata.obs[f'Eigenvalue {n+1}']
@@ -1515,7 +1515,7 @@ class Landscape:
 
             for k in order:
                 cidxs = np.where(self.adata.obs[self.cluster_key]==k)[0]
-                expression_dict[k] = np.mean(M[cidxs],axis=0).A.squeeze()
+                expression_dict[k] = to_numpy(np.mean(M[cidxs],axis=0)).squeeze()
 
             plot_data['expression'] = defaultdict(lambda: expression_dict)
             plot_labels['expression'] = defaultdict(lambda: 'Mean gene expression')
@@ -1595,7 +1595,7 @@ class Landscape:
         c_idx = self.adata.obs[self.cluster_key] == cluster
         if x0 is None:
             r_idx = np.random.choice(np.where(c_idx)[0])
-            cell = self.get_matrix(self.spliced_matrix_key, self.genes)[r_idx, :].A.flatten()
+            cell = to_numpy(self.get_matrix(self.spliced_matrix_key, self.genes)[r_idx, :]).flatten()
         else:
             cell = x0
 

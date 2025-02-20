@@ -3,6 +3,7 @@
 import numpy as np
 from scipy.interpolate import griddata
 from scipy.optimize import minimize
+import scipy.sparse as sp
 from scipy.special import hyp2f1 as hyper
 from scipy.signal import convolve2d
 
@@ -212,3 +213,16 @@ def ordinal(n: int):
         suffix = ['th', 'st', 'nd', 'rd', 'th'][min(n % 10, 4)]
     return str(n) + suffix
 
+def to_numpy(matrix):
+    """
+    Converts a given matrix to a NumPy array.
+    
+    Args:
+        matrix (np.ndarray or scipy.sparse matrix): Input matrix.
+    
+    Returns:
+        np.ndarray: Dense NumPy array.
+    """
+    if sp.issparse(matrix):
+        return matrix.toarray()  # Converts sparse to dense
+    return np.asarray(matrix)  # Ensures it's a NumPy array
